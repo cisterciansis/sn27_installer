@@ -31,6 +31,18 @@ ohai "WARNING: This script will install Docker, NVIDIA drivers, NVIDIA Docker su
 wait_for_user
 
 ##############################################
+# Determine the proper home directory
+##############################################
+# If running with sudo, SUDO_USER will be set; use that user's home directory.
+if [[ -n "${SUDO_USER:-}" ]]; then
+  USER_NAME="$SUDO_USER"
+  HOME_DIR=$(eval echo "~$SUDO_USER")
+else
+  USER_NAME=$(whoami)
+  HOME_DIR="$HOME"
+fi
+
+##############################################
 # Install prerequisites and Docker
 ##############################################
 ohai "Updating package lists and installing prerequisites..."
@@ -52,7 +64,6 @@ ohai "Installing Docker packages..."
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || abort "Docker installation failed."
 
 # Add the current user to the docker group
-USER_NAME=${SUDO_USER:-$(whoami)}
 ohai "Adding user ${USER_NAME} to docker group..."
 sudo usermod -aG docker "$USER_NAME" || abort "Failed to add user to docker group."
 
@@ -115,11 +126,24 @@ else
     exit 1
   fi
 
-  ohai "Configuring CUDA environment variables in ~/.bashrc..."
-  echo "" | sudo tee -a "$HOME/.bashrc" > /dev/null
-  echo "# CUDA configuration added by 1_cuda_installer.sh" | sudo tee -a "$HOME/.bashrc" > /dev/null
-  echo "export PATH=/usr/local/cuda-12.8/bin:\$PATH" | sudo tee -a "$HOME/.bashrc" > /dev/null
-  echo "export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\$LD_LIBRARY_PATH" | sudo tee -a "$HOME/.bashrc" > /dev/null
+  ##############################################
+  # Configure CUDA environment variables
+  ##############################################
+  ohai "Configuring CUDA environment variables in ${HOME_DIR}/.bashrc..."
+  
+  # Append the CUDA environment configuration to the user's .bashrc if it's not already present.
+  if ! grep -q "CUDA configuration added by 1_cuda_installer.sh" "${HOME_DIR}/.bashrc"; then
+    {
+      echo ""
+      echo "# CUDA configuration added by 1_cuda_installer.sh"
+      echo "export PATH=/usr/local/cuda-12.8/bin:\$PATH"
+      echo "export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\$LD_LIBRARY_PATH"
+    } | sudo tee -a "${HOME_DIR}/.bashrc" > /dev/null
+    ohai "CUDA environment variables appended to ${HOME_DIR}/.bashrc"
+  else
+    ohai "CUDA environment variables already present in ${HOME_DIR}/.bashrc"
+  fi
+
   ohai "CUDA Toolkit 12.8 installed successfully!"
 fi
 
