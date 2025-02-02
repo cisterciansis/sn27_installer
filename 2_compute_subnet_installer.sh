@@ -6,7 +6,7 @@ set -o history -o histexpand
 # This script installs the NI Compute Subnet components (Compute-Subnet, Python, PM2, etc.),
 # configures your miner, and launches it via PM2.
 # It requires that CUDA is installed. If CUDA is not found, please run 1_cuda_installer.sh first and reboot.
-# This updated version adds checks to allow re-running without failure.
+# This updated version adds checks for pre-existing installations and improves the PM2 configuration.
 
 abort() {
   echo "Error: $1" >&2
@@ -65,7 +65,6 @@ sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install --upgrade pip || abort "Fa
 # Clone and install Compute-Subnet repository
 ##############################################
 ohai "Cloning or updating Compute-Subnet repository..."
-# Ensure the target directory exists
 if [ ! -d "$CS_PATH" ]; then
   sudo mkdir -p "$CS_PATH"
 fi
@@ -75,12 +74,10 @@ if [ ! -d "${CS_PATH}/.git" ]; then
   sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
 else
   ohai "Repository already exists; updating Compute-Subnet..."
-  # Mark repository as safe to avoid ownership issues
+  # Add the repository as a safe directory to avoid dubious ownership warnings
   sudo -u "$USER_NAME" git -C "$CS_PATH" config --global --add safe.directory "$CS_PATH" 2>/dev/null
-  # Pull latest changes as non-root user
   sudo -u "$USER_NAME" git -C "$CS_PATH" pull --ff-only || abort "Git pull failed."
 fi
-# Ensure proper ownership for subsequent operations
 sudo chown -R "$USER_NAME:$USER_NAME" "$CS_PATH"
 
 ohai "Installing Compute-Subnet dependencies..."
@@ -179,14 +176,23 @@ fi
 # Create PM2 Miner Process Configuration
 ##############################################
 ohai "Creating PM2 configuration file for the miner process..."
+# Capture current environment variables to ensure CUDA is on PATH for the PM2 process
+CURRENT_PATH=${PATH}
+CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH}
+
 PM2_CONFIG_FILE="${CS_PATH}/pm2_miner_config.json"
 cat > "$PM2_CONFIG_FILE" <<EOF
 {
   "apps": [{
     "name": "subnet27_miner",
+    "cwd": "${CS_PATH}",
     "script": "./neurons/miner.py",
-    "interpreter": "python3",
-    "args": "--netuid ${NETUID} --subtensor.network ${SUBTENSOR_NETWORK} --wallet.name ${COLDKEY_WALLET} --wallet.hotkey ${HOTKEY_WALLET} --axon.port ${axon_port} --logging.debug --miner.blacklist.force_validator_permit --auto_update yes"
+    "interpreter": "${VENV_DIR}/bin/python3",
+    "args": "--netuid ${NETUID} --subtensor.network ${SUBTENSOR_NETWORK} --wallet.name ${COLDKEY_WALLET} --wallet.hotkey ${HOTKEY_WALLET} --axon.port ${axon_port} --logging.debug --miner.blacklist.force_validator_permit --auto_update yes",
+    "env": {
+      "PATH": "/usr/local/cuda-12.8/bin:${CURRENT_PATH}",
+      "LD_LIBRARY_PATH": "/usr/local/cuda-12.8/lib64:${CURRENT_LD_LIBRARY_PATH}"
+    }
   }]
 }
 EOF
