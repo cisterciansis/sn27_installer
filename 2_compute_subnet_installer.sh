@@ -72,12 +72,17 @@ sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install --upgrade pip || abort "Fa
 # Clone and install Compute-Subnet repository
 ##############################################
 ohai "Cloning or updating Compute-Subnet repository..."
-if [ ! -d "$CS_PATH" ]; then
-  sudo mkdir -p "$CS_PATH"
+# If the directory exists, ensure it is owned by the correct user.
+if [ -d "$CS_PATH" ]; then
+  sudo chown -R "$USER_NAME:$USER_NAME" "$CS_PATH"
 fi
 
-if [ ! -d "${CS_PATH}/.git" ]; then
+if [ ! -d "$CS_PATH" ]; then
   ohai "Repository not found; cloning Compute-Subnet..."
+  sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
+elif [ ! -d "${CS_PATH}/.git" ]; then
+  ohai "Directory ${CS_PATH} exists but is not a valid git repository. Removing and cloning..."
+  sudo rm -rf "$CS_PATH" || abort "Failed to remove invalid directory"
   sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
 else
   ohai "Repository already exists; updating Compute-Subnet..."
@@ -85,7 +90,6 @@ else
   sudo -u "$USER_NAME" git -C "$CS_PATH" config --global --add safe.directory "$CS_PATH" 2>/dev/null
   sudo -u "$USER_NAME" git -C "$CS_PATH" pull --ff-only || abort "Git pull failed."
 fi
-sudo chown -R "$USER_NAME:$USER_NAME" "$CS_PATH"
 
 # Check that the miner script exists
 if [ ! -f "$CS_PATH/neurons/miner.py" ]; then
