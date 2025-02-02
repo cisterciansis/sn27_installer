@@ -6,7 +6,7 @@ set -o history -o histexpand
 # This script installs the NI Compute Subnet components (Compute-Subnet, Python, PM2, etc.),
 # configures your miner, and launches it via PM2.
 # It requires that CUDA is installed. If CUDA is not found, please run 1_cuda_installer.sh first and reboot.
-# This updated version adds checks for pre-existing installations and improves the PM2 configuration.
+# This version adds extra checks for repository location, virtual environment consistency, and file permissions.
 
 abort() {
   echo "Error: $1" >&2
@@ -42,6 +42,13 @@ cat << "EOF"
 EOF
 
 ##############################################
+# Check Active Virtual Environment
+##############################################
+if [ -n "${VIRTUAL_ENV:-}" ] && [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+  ohai "Warning: Your active virtual environment ($VIRTUAL_ENV) does not match the expected one ($VENV_DIR)."
+fi
+
+##############################################
 # Install Python, pip, and create virtual environment
 ##############################################
 ohai "Installing Python3, pip, and virtual environment..."
@@ -74,11 +81,22 @@ if [ ! -d "${CS_PATH}/.git" ]; then
   sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
 else
   ohai "Repository already exists; updating Compute-Subnet..."
-  # Add the repository as a safe directory to avoid dubious ownership warnings
+  # Mark repository as safe to avoid dubious ownership warnings
   sudo -u "$USER_NAME" git -C "$CS_PATH" config --global --add safe.directory "$CS_PATH" 2>/dev/null
   sudo -u "$USER_NAME" git -C "$CS_PATH" pull --ff-only || abort "Git pull failed."
 fi
 sudo chown -R "$USER_NAME:$USER_NAME" "$CS_PATH"
+
+# Check that the miner script exists
+if [ ! -f "$CS_PATH/neurons/miner.py" ]; then
+  abort "miner.py not found in ${CS_PATH}/neurons. Please check the repository."
+fi
+
+# Ensure that miner.py is executable
+if [ ! -x "$CS_PATH/neurons/miner.py" ]; then
+  ohai "miner.py is not executable; setting executable permission..."
+  sudo -u "$USER_NAME" chmod +x "$CS_PATH/neurons/miner.py" || abort "Failed to set executable permission on miner.py."
+fi
 
 ohai "Installing Compute-Subnet dependencies..."
 cd "$CS_PATH" || abort "Cannot change directory to Compute-Subnet."
@@ -176,7 +194,7 @@ fi
 # Create PM2 Miner Process Configuration
 ##############################################
 ohai "Creating PM2 configuration file for the miner process..."
-# Capture current environment variables, with a default for LD_LIBRARY_PATH if it's not set.
+# Capture current environment variables, with a default for LD_LIBRARY_PATH if not set.
 CURRENT_PATH=${PATH}
 CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
 
