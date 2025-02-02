@@ -63,10 +63,20 @@ sudo apt-get install -y at || abort "Failed to install 'at'."
 # Install NVIDIA Docker support
 ##############################################
 ohai "Installing NVIDIA Docker support..."
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add - || abort "Failed to add NVIDIA Docker GPG key."
-# Use Ubuntu codename for the NVIDIA repository
+
+# Add NVIDIA Docker GPG key using gpg --dearmor (avoids using the deprecated apt-key)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/nvidia-docker.gpg > /dev/null || abort "Failed to add NVIDIA Docker GPG key."
+
+# Determine the correct NVIDIA distribution identifier.
+# For Ubuntu 22.04 (codename "jammy"), use "ubuntu22.04" since that's what NVIDIA expects.
 UBUNTU_CODENAME=$(lsb_release -cs)
-curl -s -L "https://nvidia.github.io/nvidia-docker/${UBUNTU_CODENAME}/nvidia-docker.list" | sudo tee /etc/apt/sources.list.d/nvidia-docker.list || abort "Failed to add NVIDIA Docker repository."
+if [[ "$UBUNTU_CODENAME" == "jammy" ]]; then
+  NVIDIA_DIST="ubuntu22.04"
+else
+  NVIDIA_DIST="$UBUNTU_CODENAME"
+fi
+
+curl -s -L "https://nvidia.github.io/nvidia-docker/${NVIDIA_DIST}/nvidia-docker.list" | sudo tee /etc/apt/sources.list.d/nvidia-docker.list || abort "Failed to add NVIDIA Docker repository."
 sudo apt-get update -y || abort "Failed to update package lists after adding NVIDIA Docker repository."
 sudo apt-get install -y nvidia-container-toolkit nvidia-docker2 || abort "Failed to install NVIDIA Docker packages."
 ohai "NVIDIA Docker support installed."
