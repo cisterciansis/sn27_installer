@@ -16,7 +16,13 @@ ohai() {
   echo "==> $*"
 }
 
-# Check for CUDA (nvcc)
+# When running with sudo, the PATH may not include the CUDA Toolkit binaries.
+# Prepend the CUDA bin directory to the PATH if nvcc is not already found.
+if ! command -v nvcc >/dev/null 2>&1; then
+  export PATH="/usr/local/cuda-12.8/bin:$PATH"
+fi
+
+# Now check for CUDA (nvcc)
 if ! command -v nvcc >/dev/null 2>&1; then
   abort "CUDA does not appear to be installed. Please run 1_cuda_installer.sh first and reboot."
 fi
