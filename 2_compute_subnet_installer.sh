@@ -176,9 +176,9 @@ fi
 # Create PM2 Miner Process Configuration
 ##############################################
 ohai "Creating PM2 configuration file for the miner process..."
-# Capture current environment variables to ensure CUDA is on PATH for the PM2 process
+# Capture current environment variables, with a default for LD_LIBRARY_PATH if it's not set.
 CURRENT_PATH=${PATH}
-CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH}
+CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
 
 PM2_CONFIG_FILE="${CS_PATH}/pm2_miner_config.json"
 cat > "$PM2_CONFIG_FILE" <<EOF
