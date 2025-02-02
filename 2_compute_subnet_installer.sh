@@ -2,12 +2,6 @@
 set -u
 set -o history -o histexpand
 
-# 2_compute_subnet_installer.sh
-# This script installs the NI Compute Subnet components (Compute-Subnet, Python, PM2, etc.),
-# configures your miner, and launches it via PM2.
-# It requires that CUDA is installed. If CUDA is not found, please run 1_cuda_installer.sh first and reboot.
-# This version adds extra checks for repository location, virtual environment consistency, and file permissions.
-
 abort() {
   echo "Error: $1" >&2
   exit 1
@@ -17,97 +11,88 @@ ohai() {
   echo "==> $*"
 }
 
-# Prepend CUDA Toolkit bin directory to PATH (helps when running with sudo)
-if ! command -v nvcc >/dev/null 2>&1; then
-  export PATH="/usr/local/cuda-12.8/bin:$PATH"
-fi
-
-# Now check for CUDA (nvcc)
-if ! command -v nvcc >/dev/null 2>&1; then
-  abort "CUDA does not appear to be installed. Please run 1_cuda_installer.sh first and reboot."
-fi
-
-# Set user and home variables
+##############################################
+# Pre-check: Ensure Bittensor Wallets Exist
+##############################################
+# Define key variables for wallet location
 USER_NAME=${SUDO_USER:-$(whoami)}
 HOME_DIR=$(eval echo "~${USER_NAME}")
-BASHRC="${HOME_DIR}/.bashrc"
 DEFAULT_WALLET_DIR="${HOME_DIR}/.bittensor/wallets"
-CS_PATH="${HOME_DIR}/Compute-Subnet"
+
+if [ ! -d "${DEFAULT_WALLET_DIR}" ] || [ -z "$(ls -A ${DEFAULT_WALLET_DIR} 2>/dev/null)" ]; then
+  ohai "WARNING: No Bittensor wallets detected in ${DEFAULT_WALLET_DIR}."
+  echo "Before running this installer, please create a wallet pair by executing the following commands:"
+  echo "    btcli w new_coldkey"
+  echo "    btcli w new_hotkey"
+  echo "After creating your wallets, re-run this script."
+  exit 1
+fi
+
+##############################################
+# Define Remaining Key Variables
+##############################################
+BASHRC="${HOME_DIR}/.bashrc"
+
+# Since this installer is part of the Compute-Subnet repository, assume the repo root is the current directory.
+CS_PATH="$(pwd)"
+
+# Define the expected location for the virtual environment.
 VENV_DIR="${HOME_DIR}/venv"
 
 cat << "EOF"
 
    NI Compute Subnet 27 Installer - Compute Subnet Setup
+   (This script is running from within the Compute-Subnet repository)
 
 EOF
 
 ##############################################
-# Check Active Virtual Environment
+# Ensure Virtual Environment is Active
 ##############################################
-if [ -n "${VIRTUAL_ENV:-}" ] && [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
-  ohai "Warning: Your active virtual environment ($VIRTUAL_ENV) does not match the expected one ($VENV_DIR)."
+if [ -z "${VIRTUAL_ENV:-}" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+    if [ -f "$VENV_DIR/bin/activate" ]; then
+         ohai "Activating virtual environment from ${VENV_DIR}..."
+         # shellcheck disable=SC1090
+         source "$VENV_DIR/bin/activate"
+    else
+         ohai "Virtual environment not found. Creating a new virtual environment at ${VENV_DIR}..."
+         python3 -m venv "$VENV_DIR" || abort "Failed to create virtual environment."
+         ohai "Activating virtual environment..."
+         # shellcheck disable=SC1090
+         source "$VENV_DIR/bin/activate"
+    fi
 fi
 
 ##############################################
-# Install Python, pip, and create virtual environment
+# Ensure btcli is Available (i.e. Bittensor is Installed)
 ##############################################
-ohai "Installing Python3, pip, and virtual environment..."
-sudo apt-get update
-sudo apt-get install -y python3 python3-pip python3-venv || abort "Failed to install Python or venv."
-
-ohai "Upgrading system pip..."
-sudo -H python3 -m pip install --upgrade pip || abort "Failed to upgrade pip."
-
-if [ -d "$VENV_DIR" ]; then
-  ohai "Virtual environment already exists at ${VENV_DIR}; skipping creation."
-else
-  ohai "Creating virtual environment in ${VENV_DIR} ..."
-  sudo -u "$USER_NAME" -H python3 -m venv "${VENV_DIR}" || abort "Failed to create virtual environment."
+if ! command -v btcli >/dev/null 2>&1; then
+    ohai "btcli command not found. Installing Compute-Subnet in editable mode..."
+    pip install --upgrade pip || abort "Failed to upgrade pip."
+    pip install -e . || abort "Editable install of Compute-Subnet failed."
 fi
 
+##############################################
+# Install System Prerequisites (if needed)
+##############################################
+ohai "Updating package lists and installing system prerequisites..."
+sudo apt-get update || abort "Failed to update package lists."
+sudo apt-get install -y python3 python3-pip python3-venv build-essential dkms linux-headers-$(uname -r) || abort "Failed to install prerequisites."
+
+##############################################
+# Upgrade pip and Install Compute-Subnet Dependencies
+##############################################
 ohai "Upgrading pip in the virtual environment..."
-sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install --upgrade pip || abort "Failed to upgrade pip in virtual environment."
-
-##############################################
-# Clone and install Compute-Subnet repository
-##############################################
-ohai "Cloning or updating Compute-Subnet repository..."
-# If the directory exists, ensure it is owned by the correct user.
-if [ -d "$CS_PATH" ]; then
-  sudo chown -R "$USER_NAME:$USER_NAME" "$CS_PATH"
-fi
-
-if [ ! -d "$CS_PATH" ]; then
-  ohai "Repository not found; cloning Compute-Subnet..."
-  sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
-elif [ ! -d "${CS_PATH}/.git" ]; then
-  ohai "Directory ${CS_PATH} exists but is not a valid git repository. Removing and cloning..."
-  sudo rm -rf "$CS_PATH" || abort "Failed to remove invalid directory"
-  sudo -u "$USER_NAME" git clone https://github.com/neuralinternet/Compute-Subnet.git "$CS_PATH" || abort "Git clone failed."
-else
-  ohai "Repository already exists; updating Compute-Subnet..."
-  # Mark repository as safe to avoid dubious ownership warnings
-  sudo -u "$USER_NAME" git -C "$CS_PATH" config --global --add safe.directory "$CS_PATH" 2>/dev/null
-  sudo -u "$USER_NAME" git -C "$CS_PATH" pull --ff-only || abort "Git pull failed."
-fi
-
-# Check that the miner script exists
-if [ ! -f "$CS_PATH/neurons/miner.py" ]; then
-  abort "miner.py not found in ${CS_PATH}/neurons. Please check the repository."
-fi
-
-# Ensure that miner.py is executable
-if [ ! -x "$CS_PATH/neurons/miner.py" ]; then
-  ohai "miner.py is not executable; setting executable permission..."
-  sudo -u "$USER_NAME" chmod +x "$CS_PATH/neurons/miner.py" || abort "Failed to set executable permission on miner.py."
-fi
+pip install --upgrade pip || abort "Failed to upgrade pip in virtual environment."
 
 ohai "Installing Compute-Subnet dependencies..."
-cd "$CS_PATH" || abort "Cannot change directory to Compute-Subnet."
-sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install -r requirements.txt || abort "Failed to install base requirements."
-sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install --no-deps -r requirements-compute.txt || abort "Failed to install compute requirements."
-sudo -u "$USER_NAME" -H "${VENV_DIR}/bin/pip" install -e . || abort "Editable install of Compute-Subnet failed."
+pip install -r requirements.txt || abort "Failed to install base requirements."
+pip install --no-deps -r requirements-compute.txt || abort "Failed to install compute requirements."
+pip install -e . || abort "Editable install of Compute-Subnet failed."
 
+##############################################
+# Install Extra OpenCL Libraries
+##############################################
 ohai "Installing extra OpenCL libraries..."
 sudo apt-get install -y ocl-icd-libopencl1 pocl-opencl-icd || abort "Failed to install OpenCL libraries."
 
@@ -120,7 +105,7 @@ sudo apt-get install -y npm || abort "Failed to install npm."
 sudo npm install -g pm2 || abort "Failed to install PM2."
 
 ##############################################
-# Configuration: Ask user for miner setup parameters
+# Configuration: Ask User for Miner Setup Parameters
 ##############################################
 echo
 echo "Please configure your miner setup."
@@ -150,24 +135,19 @@ SUBTENSOR_NETWORK=${SUBTENSOR_NETWORK:-$SUBTENSOR_NETWORK_DEFAULT}
 read -rp "Enter the axon port (default: 8091): " axon_port
 axon_port=${axon_port:-8091}
 
+##############################################
+# Wallet Selection
+##############################################
 echo
 ohai "Detecting available wallets in ${DEFAULT_WALLET_DIR}..."
-if [ ! -d "${DEFAULT_WALLET_DIR}" ]; then
-  echo "Wallet directory ${DEFAULT_WALLET_DIR} does not exist."
-  echo "It appears that you have not created any wallets yet."
-  echo "Before proceeding, please activate your virtual environment:"
-  echo "  source ${VENV_DIR}/bin/activate"
-  echo "Then create your wallets using the following commands:"
-  echo "  btcli new_coldkey"
-  echo "  btcli new_hotkey"
-  exit 1
-else
-  wallet_files=("${DEFAULT_WALLET_DIR}"/*)
-  if [ ${#wallet_files[@]} -eq 0 ]; then
+wallet_files=("${DEFAULT_WALLET_DIR}"/*)
+if [ ${#wallet_files[@]} -eq 0 ]; then
     echo "No wallets found in ${DEFAULT_WALLET_DIR}."
-    echo "Please create your wallets using 'btcli new_coldkey' and 'btcli new_hotkey' after activating your virtual environment."
+    echo "Please create your wallets using:"
+    echo "  btcli w new_coldkey"
+    echo "  btcli w new_hotkey"
     exit 1
-  else
+else
     echo "Available wallets:"
     i=1
     declare -A wallet_map
@@ -177,17 +157,14 @@ else
       wallet_map[$i]="$wallet_name"
       ((i++))
     done
-  fi
 fi
 
-# Ask user to choose coldkey wallet
 read -rp "Enter the number corresponding to your COLDKEY wallet: " coldkey_choice
 COLDKEY_WALLET="${wallet_map[$coldkey_choice]}"
 if [[ -z "$COLDKEY_WALLET" ]]; then
   abort "Invalid selection for coldkey wallet."
 fi
 
-# Ask user to choose hotkey wallet
 read -rp "Enter the number corresponding to your HOTKEY wallet: " hotkey_choice
 HOTKEY_WALLET="${wallet_map[$hotkey_choice]}"
 if [[ -z "$HOTKEY_WALLET" ]]; then
@@ -195,12 +172,24 @@ if [[ -z "$HOTKEY_WALLET" ]]; then
 fi
 
 ##############################################
+# Verify Miner Script and Set Permissions
+##############################################
+if [ ! -f "$CS_PATH/neurons/miner.py" ]; then
+  abort "miner.py not found in ${CS_PATH}/neurons. Please check the repository."
+fi
+
+if [ ! -x "$CS_PATH/neurons/miner.py" ]; then
+  ohai "miner.py is not executable; setting executable permission..."
+  chmod +x "$CS_PATH/neurons/miner.py" || abort "Failed to set executable permission on miner.py."
+fi
+
+##############################################
 # Create PM2 Miner Process Configuration
 ##############################################
 ohai "Creating PM2 configuration file for the miner process..."
-# Capture current environment variables, with a default for LD_LIBRARY_PATH if not set.
+# Capture current environment variables (with defaults)
 CURRENT_PATH=${PATH}
-CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
+CURRENT_LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-""}
 
 PM2_CONFIG_FILE="${CS_PATH}/pm2_miner_config.json"
 cat > "$PM2_CONFIG_FILE" <<EOF
@@ -225,7 +214,6 @@ ohai "PM2 configuration file created at ${PM2_CONFIG_FILE}"
 # Start Miner Process with PM2
 ##############################################
 ohai "Starting miner process with PM2..."
-cd "$CS_PATH" || abort "Cannot change directory to Compute-Subnet."
 pm2 start "$PM2_CONFIG_FILE" || abort "Failed to start PM2 process."
 
 ohai "Miner process started."
